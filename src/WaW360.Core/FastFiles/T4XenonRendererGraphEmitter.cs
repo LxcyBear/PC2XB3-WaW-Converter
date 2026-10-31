@@ -14,9 +14,21 @@ public sealed class T4XenonRendererEmitResult
     public required int RendererPixelShaders { get; init; }
     public required int RealImageRoots { get; init; }
     public required int RealRawFileRoots { get; init; }
+    public required int RealMapEntsRoots { get; init; }
+    public required int RealComWorldRoots { get; init; }
+    public required long ComWorldZoneOffset { get; init; }
+    public required string ComWorldParentXenonSha256 { get; init; }
+    public required string ComWorldLightsXenonSha256 { get; init; }
+    public required string ComWorldCellsXenonSha256 { get; init; }
+    public required string ComWorldSamplesSourceSha256 { get; init; }
     public required int RealMaterialRoots { get; init; }
     public required int MaterialReferenceRoots { get; init; }
     public required int RealXModelRoots { get; init; }
+    // Diagnostic source-owned scalars and inline strings; NOT complete 7b graphs.
+    public int OriginalPcWeaponDiagnosticRoots { get; init; }
+    public long OriginalPcWeaponDiagnosticSerializedBytes { get; init; }
+    public long OriginalPcWeaponSourceProofBytes { get; init; }
+    public bool OriginalPcWeaponFullOwnedGraphsEmitted { get; init; }
     public required int XModelReferenceRoots { get; init; }
     public required long ZoneBytes { get; init; }
     public required long MainZoneBytes { get; init; }
@@ -34,6 +46,14 @@ public sealed class T4XenonRendererEmitResult
     public required bool ValidationOnly { get; init; }
     public required bool ValidationPass { get; init; }
     public required bool ReadyForHardware { get; init; }
+    public required bool OriginalPcGfxWorldCoreEmitted { get; init; }
+    public required bool OriginalPcGfxWorldFullDpvsGraphComplete { get; init; }
+    public required int OriginalPcGfxWorldGate10DrawRecords { get; init; }
+    public required int OriginalPcGfxWorldGate10UnverifiedStockDraws { get; init; }
+    public required int OriginalPcGfxWorldGate11Cells { get; init; }
+    public required int OriginalPcGfxWorldGate11AabbTrees { get; init; }
+    public required int OriginalPcGfxWorldGate11SmodelIndexes { get; init; }
+    public required int OriginalPcGfxWorldGate11ReflectionIndexes { get; init; }
     public required string? OatGateError { get; init; }
     public required string TextReportFile { get; init; }
     public required string JsonReportFile { get; init; }
@@ -69,7 +89,13 @@ public static class T4XenonRendererGraphEmitter
         string? xmodelBindingManifest = null,
         string? materialGraphRoot = null,
         string? materialBindingManifest = null,
-        string? rawFileGraftManifest = null)
+        string? rawFileGraftManifest = null,
+        string? mapEntsCanaryManifest = null,
+        string? comWorldProofManifest = null,
+        bool aztecSourceOnly39MaterialFfScratch = false,
+        string? aztecSourceWorldSeedReport = null,
+        string? aztecSource76SurfaceManifest = null,
+        string? aztecSourceWorldMaterialCandidates = null)
     {
         dumpRoot = Path.GetFullPath(dumpRoot);
         nativeFastFile = Path.GetFullPath(nativeFastFile);
@@ -128,14 +154,24 @@ public static class T4XenonRendererGraphEmitter
             xmodelBindingManifest,
             materialGraphRoot,
             materialBindingManifest,
-            rawFileGraftManifest);
+            rawFileGraftManifest,
+            mapEntsCanaryManifest,
+            comWorldProofManifest,
+            aztecSourceOnly39MaterialFfScratch,
+            aztecSourceWorldSeedReport,
+            aztecSource76SurfaceManifest,
+            aztecSourceWorldMaterialCandidates);
         if (!layout.LayoutReady)
             throw new InvalidDataException(
                 "Stage 4E layout recheck failed: " + string.Join(" | ", layout.Blockers));
 
         var native = await FastFileAnalysisCache.GetZoneAsync(nativeFastFile, cancellationToken);
         var roots = LoadNativeIdentity(nativeIdentityManifest);
+        var weaponCanary = await T4XenonAztecWeapon63ScalarCanary.LoadFromEnvironmentAsync(
+            roots,cancellationToken);
         var rawFileGraft = T4XenonRawFileProductionGraft.Load(rawFileGraftManifest, roots);
+        var pcMapEnts = T4XenonAztecMapEntsGraft.Load(mapEntsCanaryManifest, roots);
+        var pcComWorld = await T4XenonAztecComWorldGraft.LoadAsync(comWorldProofManifest, roots, cancellationToken);
         var bindings = LoadBindings(bindingManifest);
 
         T4XenonMaterialCorpus? materialCorpus = null;
@@ -150,12 +186,31 @@ public static class T4XenonRendererGraphEmitter
             materialCorpus = T4XenonMaterialCorpus.Load(
                 materialGraphRoot!,
                 materialBindingManifest!,
-                roots);
+                roots,
+                expectedOwned: aztecSourceOnly39MaterialFfScratch ? 39 : 502,
+                allowSourceOnlyDiagnostic: aztecSourceOnly39MaterialFfScratch);
             var materialDependencyErrors = materialCorpus.ValidateDependencies(roots);
             if (materialDependencyErrors.Count != 0)
                 throw new InvalidDataException(
                     "Stage 4E Material dependency validation failed: " +
                     string.Join(" | ", materialDependencyErrors.Take(20)));
+        }
+
+
+        T4XenonAztecWorldGraft? sourceWorld = null;
+        if(aztecSourceWorldSeedReport is not null ||
+           aztecSource76SurfaceManifest is not null ||
+           aztecSourceWorldMaterialCandidates is not null)
+        {
+            if(!aztecSourceOnly39MaterialFfScratch ||
+               string.IsNullOrWhiteSpace(aztecSourceWorldSeedReport) ||
+               string.IsNullOrWhiteSpace(aztecSource76SurfaceManifest) ||
+               string.IsNullOrWhiteSpace(aztecSourceWorldMaterialCandidates) ||
+               materialCorpus is null || materialCorpus.OwnedByRoot.Count != 39)
+                throw new InvalidDataException("Live PC GfxWorld requires all 3 original PC source manifests and 39 real FF Material owners.");
+            sourceWorld=await T4XenonAztecWorldGraft.LoadAsync(
+                aztecSourceWorldSeedReport,aztecSource76SurfaceManifest,
+                aztecSourceWorldMaterialCandidates,roots,cancellationToken);
         }
 
         if (xmodelCorpus is not null)
@@ -191,6 +246,11 @@ public static class T4XenonRendererGraphEmitter
             .ToDictionary(x => x.RootIndex);
         var stableByRoot = layout.RootInsertLayouts
             .ToDictionary(x => x.RootIndex, x => x.StablePointer);
+        // The opt-in Gate11 generated-image name-shell probe is the first
+        // GfxWorld branch pointing to existing top-level native image roots.
+        // The full Stage4D layout is required for FORWARD root INSERT aliases.
+        // No image pixels or map payloads are fabricated by this operation.
+        sourceWorld?.ApplyImageRootReferenceAliases(stableByRoot);
 
         var state = new EmitState();
         var blobIndex = BuildBlobIndex(dumpRoot);
@@ -229,6 +289,9 @@ public static class T4XenonRendererGraphEmitter
         var realMaterials = 0;
         var realXModels = 0;
         var realRawFiles = 0;
+        var realMapEnts = 0;
+        var realComWorlds = 0;
+        long comWorldZoneOffset = -1;
         var targetImageRoots = imageGraph is null
             ? 0
             : imageGraftLimit > 0
@@ -360,8 +423,61 @@ public static class T4XenonRendererGraphEmitter
                 continue;
             }
 
+            if(sourceWorld is not null && root.Index == sourceWorld.NativeRootIndex)
+            {
+                sourceWorld.Emit(zone,
+                    (size,align,serialized)=>{state.VirtualAlloc(size,align,serialized);},
+                    state.TempRoot,stableByRoot);
+                continue;
+            }
+
+            if (pcComWorld is not null && root.Index == pcComWorld.NativeRootIndex)
+            {
+                // Source-owned original PC ComWorld, endian-transformed to
+                // 32-bit T4 Xenon. The streamed children are: inline name,
+                // two fixed ComPrimaryLight records (no defName children),
+                // 88 ComBurnableCell headers, then 88 * 32 source sample bytes.
+                state.TempRoot(pcComWorld.ParentXenon.Length);
+                comWorldZoneOffset = zone.Position;
+                zone.Write(pcComWorld.ParentXenon);
+                EmitString(zone, state, pcComWorld.Name);
+
+                state.VirtualAlloc(pcComWorld.LightsXenon.Length, 4, serialized: true);
+                zone.Write(pcComWorld.LightsXenon);
+
+                state.VirtualAlloc(pcComWorld.BurnableCellsXenon.Length, 4, serialized: true);
+                zone.Write(pcComWorld.BurnableCellsXenon);
+
+                for (var i = 0; i < 88; i++)
+                {
+                    state.VirtualAlloc(32, 1, serialized: true);
+                    zone.Write(pcComWorld.BurnableSamples, i * 32, 32);
+                }
+                realComWorlds++;
+                continue;
+            }
+
             // Production RawFiles use exact PC-derived bodies, never oracle payloads.
             // T4 RawFile = name* / logical length / buffer*; buffer has an extra NUL.
+            if (pcMapEnts is not null && root.Index == pcMapEnts.NativeRootIndex)
+            {
+                // T4 Xenon MapEnts { name*, entityString*, numEntityChars }.
+                // OAT's MapEnts loader appends one terminating NUL and includes
+                // it in numEntityChars. Both child pointers use FOLLOWING.
+                var body = new byte[12];
+                PutU32(body, 0, T4ZonePointer.Following);
+                PutU32(body, 4, T4ZonePointer.Following);
+                PutU32(body, 8, checked((uint)(pcMapEnts.SourceBytes.Length + 1)));
+                state.TempRoot(body.Length);
+                zone.Write(body);
+                EmitString(zone, state, pcMapEnts.AssetName);
+                state.VirtualAlloc(pcMapEnts.SourceBytes.Length + 1L, 1, true);
+                zone.Write(pcMapEnts.SourceBytes);
+                zone.WriteByte(0);
+                realMapEnts++;
+                continue;
+            }
+
             if (rawFileGraft.TryGetValue(root.Index, out var graftedRaw))
             {
                 realRawFiles++;
@@ -375,6 +491,19 @@ public static class T4XenonRendererGraphEmitter
                 state.VirtualAlloc(graftedRaw.Bytes.Length + 1L, 1, serialized: true);
                 zone.Write(graftedRaw.Bytes);
                 zone.WriteByte(0);
+                continue;
+            }
+
+            if(weaponCanary is not null &&
+               weaponCanary.ByRoot.TryGetValue(root.Index,out var weaponEntry))
+            {
+                // REAL original PC scalar/inline XString data, SHA-matched to
+                // the standalone 7b Xbox source graph, but ALL other child
+                // pointers deliberately remain NULL in this scratch test.
+                // No full 7b payload or cross-asset dependencies are claimed.
+                weaponEntry.Emit(zone,
+                    (size,align,serialized)=>{state.VirtualAlloc(size,align,serialized);},
+                    state.TempRoot);
                 continue;
             }
 
@@ -404,6 +533,10 @@ public static class T4XenonRendererGraphEmitter
             throw new InvalidDataException(
                 $"XModel root upgrade mismatch: upgraded={realXModels:N0}, expected={xmodelCorpus.OwnedByRoot.Count:N0}.");
 
+        if (realComWorlds != (pcComWorld is null ? 0 : 1))
+            throw new InvalidDataException("Aztec PC ComWorld source-graft root count drift.");
+        if (realMapEnts != (pcMapEnts is null ? 0 : 1))
+            throw new InvalidDataException("Aztec original-PC MapEnts root emission count drift.");
         if (realRawFiles != rawFileGraft.Count)
             throw new InvalidDataException($"RawFile graft count mismatch: emitted={realRawFiles}, expected={rawFileGraft.Count}.");
 
@@ -517,7 +650,9 @@ public static class T4XenonRendererGraphEmitter
         // native identity + OAT pass cannot certify hardware readiness until
         // PC-owned StringTable values have a real serializer.
         var emptyStringTableShells = roots.Count(r => Normalize(r.TypeName) == "stringtable");
-        var validationOnly = (imageGraph is not null && imageGraphValidationOnly) ||
+        var validationOnly = weaponCanary is not null ||
+                             aztecSourceOnly39MaterialFfScratch ||
+                             (imageGraph is not null && imageGraphValidationOnly) ||
                              emptyStringTableShells != 0;
         var validationPass =
             layoutReplayExact && wrapped.RoundTripVerified &&
@@ -536,8 +671,20 @@ public static class T4XenonRendererGraphEmitter
         report.AppendLine($"Renderer PixelShaders:      {rendererPixels:N0}");
         report.AppendLine($"Real Material roots:        {realMaterials:N0}");
         report.AppendLine($"PC-backed RawFile roots:    {realRawFiles:N0}");
+        report.AppendLine($"Original-PC MapEnts roots:   {realMapEnts:N0} (scratch-only)");
+        report.AppendLine($"Original-PC ComWorld roots:  {realComWorlds:N0} (source-derived; scratch-only)");
+        report.AppendLine($"Original-PC GfxWorld core:    {(sourceWorld is null ? "NOT EMITTED" : "EMITTED (735 live surfaces; incomplete DPVS children; OAT probe)") }");
+        report.AppendLine($"Gate10 native diagnostic draw records: {sourceWorld?.Gate10OatDiagnosticDrawRecords ?? 0:N0}");
+        report.AppendLine($"Gate10 runtime-unverified stock draw: {sourceWorld?.Gate10UnverifiedStockDraws ?? 0:N0}");
+        report.AppendLine($"Gate11 source-owned native cells: {sourceWorld?.Gate11DiagnosticCells ?? 0:N0}");
+        report.AppendLine($"Gate11 source-owned AABB trees: {sourceWorld?.Gate11DiagnosticAabbTrees ?? 0:N0}");
+        report.AppendLine($"Gate11 source-owned smodel-index children: {sourceWorld?.Gate11DiagnosticSmodelIndexChildren ?? 0:N0}");
+        report.AppendLine($"PC ComWorld zone offset:     0x{comWorldZoneOffset:X}");
         report.AppendLine($"Material reference roots:   {(materialCorpus?.ReferenceRoots ?? 0):N0}");
         report.AppendLine($"Real XModel roots:          {realXModels:N0}");
+        report.AppendLine($"Original-PC WeaponDef SCRATCH scalar+XString roots: {weaponCanary?.ByRoot.Count ?? 0:N0} (NOT full Xbox 7b graphs)");
+        report.AppendLine($"Weapon canary real isolated source proof bytes: {weaponCanary?.TotalOriginalOwnedProofBytes ?? 0:N0}");
+        report.AppendLine($"Weapon diagnostic bytes serialized in FF: {weaponCanary?.TotalDiagnosticEmittedBytes ?? 0:N0}");
         report.AppendLine($"XModel reference roots:     {(xmodelCorpus?.ReferenceRoots ?? 0):N0}");
         report.AppendLine($"Zone bytes:                 {zoneBytes.LongLength:N0}");
         report.AppendLine($"TEMP:                       0x{state.TempMax:X}");
@@ -570,9 +717,20 @@ public static class T4XenonRendererGraphEmitter
             RendererPixelShaders = rendererPixels,
             RealImageRoots = realImages,
             RealRawFileRoots = realRawFiles,
+            RealMapEntsRoots = realMapEnts,
+            RealComWorldRoots = realComWorlds,
+            ComWorldZoneOffset = comWorldZoneOffset,
+            ComWorldParentXenonSha256 = pcComWorld is null ? "" : Convert.ToHexString(SHA256.HashData(pcComWorld.ParentXenon)),
+            ComWorldLightsXenonSha256 = pcComWorld is null ? "" : Convert.ToHexString(SHA256.HashData(pcComWorld.LightsXenon)),
+            ComWorldCellsXenonSha256 = pcComWorld is null ? "" : Convert.ToHexString(SHA256.HashData(pcComWorld.BurnableCellsXenon)),
+            ComWorldSamplesSourceSha256 = pcComWorld?.SourceSamplesSha256 ?? "",
             RealMaterialRoots = realMaterials,
             MaterialReferenceRoots = materialCorpus?.ReferenceRoots ?? 0,
             RealXModelRoots = realXModels,
+            OriginalPcWeaponDiagnosticRoots = weaponCanary?.ByRoot.Count ?? 0,
+            OriginalPcWeaponDiagnosticSerializedBytes = weaponCanary?.TotalDiagnosticEmittedBytes ?? 0,
+            OriginalPcWeaponSourceProofBytes = weaponCanary?.TotalOriginalOwnedProofBytes ?? 0,
+            OriginalPcWeaponFullOwnedGraphsEmitted = false,
             XModelReferenceRoots = xmodelCorpus?.ReferenceRoots ?? 0,
             ZoneBytes = zoneBytes.LongLength,
             MainZoneBytes = mainBytes.LongLength,
@@ -590,6 +748,14 @@ public static class T4XenonRendererGraphEmitter
             ValidationOnly = validationOnly,
             ValidationPass = validationPass,
             ReadyForHardware = ready,
+            OriginalPcGfxWorldCoreEmitted = sourceWorld is not null,
+            OriginalPcGfxWorldFullDpvsGraphComplete = sourceWorld?.FullDpvsChildGraphComplete ?? false,
+            OriginalPcGfxWorldGate10DrawRecords = sourceWorld?.Gate10OatDiagnosticDrawRecords ?? 0,
+            OriginalPcGfxWorldGate10UnverifiedStockDraws = sourceWorld?.Gate10UnverifiedStockDraws ?? 0,
+            OriginalPcGfxWorldGate11Cells = sourceWorld?.Gate11DiagnosticCells ?? 0,
+            OriginalPcGfxWorldGate11AabbTrees = sourceWorld?.Gate11DiagnosticAabbTrees ?? 0,
+            OriginalPcGfxWorldGate11SmodelIndexes = sourceWorld?.Gate11DiagnosticSmodelIndexChildren ?? 0,
+            OriginalPcGfxWorldGate11ReflectionIndexes = sourceWorld?.Gate11DiagnosticReflectionIndices ?? 0,
             OatGateError = oatError,
             TextReportFile = txt,
             JsonReportFile = json
